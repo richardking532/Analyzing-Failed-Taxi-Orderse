@@ -1,2 +1,2 @@
 # Analyzing Failed Taxi Orderse
- Analyzing trends related to cancelled taxi orders
+I found this data project on stratascratch.com. It is a take-home test used as part of the interview process for data science positions at Gett, which has an application for clients to order taxis and for taxi drivers to accept the clients' rides. The goal of this project is to examine a data set of failed orders (meaning the customer did not end up getting a car) to identify trends and possible explanations for why the orders failed.
