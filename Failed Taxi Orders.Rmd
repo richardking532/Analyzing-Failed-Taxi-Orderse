@@ -1,0 +1,309 @@
+---
+title: "Investigating Failed Taxi Orders"
+output:
+  html_document:
+    df_print: paged
+---
+
+I found this data project on stratascratch.com. It is a take-home test used as part of the interview process for data science positions at Gett, which has an application for clients to order taxis and for taxi drivers to accept the clients' rides. The goal of this project is to examine a data set of failed orders (meaning the customer did not end up getting a car) to identify trends and possible explanations for why the orders failed.
+
+### Tasks
+
+1\. Plot the distribution of orders according to the reason for failure (e.g. cancellation before/after driver assignment and who cancelled the order). Analyze the resulting plot.
+
+2\. Plot the distribution of failed orders by hour. Is there a trend that certain hours have an abnormal number of failed orders? How can this be explained?
+
+3\. Plot the average time until cancellation before and after a driver has been assigned by the hour. If there are any outliers in the data, it would be better to remove them. Can we draw any conclusions from this plot?
+
+4\. Plot the distribution of average ETA by hour. How can this plot be explained?
+
+### Data Cleaning and Exploration
+
+Let us begin by loading our data and cleaning it up
+
+```{r, message = FALSE, warning = FALSE}
+library(tidyverse)
+
+orders <- read_csv("~/GitHub/Analyzing-Failed-Taxi-Orders/data_orders.csv")
+head(orders)
+```
+
+<table>
+
+| Term                         | Definition                                                                                |
+|:------------------------|:----------------------------------------------|
+| order_datetime               | Time that the order was placed by the client                                              |
+| origin_longitude             | Longitude of the pickup location                                                          |
+| origin_latitude              | Latitude of the pickup location                                                           |
+| m_order_eta                  | Estimated time of arrival until the pickup (in seconds)                                   |
+| order_gk                     | Unique order number                                                                       |
+| order_status_key             | 4 - Order cancelled by client. 9 - Order cancelled by system                              |
+| is_driver_assigned_key       | 1 - Driver has been assigned. 0 - Driver has not been assigned                            |
+| cancellation_time_in_seconds | How much time passed between the time the order was placed and the order was cancelled (in seconds)|
+
+<table>
+
+Some of the column names are unclear and not standardized, so we should rename them.
+
+```{r}
+orders <- orders %>%
+  rename(
+    order_time = order_datetime,  
+    order_eta = m_order_eta,
+    order_id = order_gk,
+    cancelled_by = order_status_key,
+    driver_assigned = is_driver_assigned_key,
+    cancellation_time = cancellations_time_in_seconds
+    )
+```
+
+Before leaning into the tasks, we should get a quick overview of our data.
+
+```{r}
+summary(orders)
+```
+
+Three things to note as we begin our tasks is (1) the large number of NAs in the order_eta column, (2) the large number of NAs in the cancellation_time column, and (3) the possibility of outliers in the cancellation_time column.
+
+For the sake of brevity in this notebook, I viewed the raw data in another window and found that all the orders with an NA value in the order_eta column also have a value of 0 in the driver_assigned column. Alternately, all the orders with a non-NA value in the order_eta column have a value of 1 in the driver_assigned column. This makes intuitive sense, since if a driver was not assigned, then the ride would never occur, and the order should not have an ETA. We will leave these values as NAs.
+
+Similar to the NAs in the order_ETA column, the orders with NAs in the cancellation_time column correspond with the cancelled_by column. The orders with NA values in the cancellation_time column have a value of 9 in the cancelled_by column, while the orders with non-NA values in the cancellation_time column have a value of 4 in the cancelled_by column. This means that if the order was cancelled by the system, it has an NA value for the cancellation_time. Whether we should leave these values as NA or change them to zero is a gray area and will depend on the question being asked. Technically, if the system cancels an order, then the time until cancellation is zero seconds, but if we change all the NAs to zero we risk skewing our data heavily when we calculate things such as averages, since around 1/3 of the orders have an NA value in the cancellation_time column. We will leave these values as NA for now and determine later whether to change them to zero.
+
+Also regarding the cancellation_time column, it appears there may be outliers based on the maximum value of the column. The median cancellation time is 98.0 seconds, the mean is 157.9 seconds, but the max cancellation time is 4,303.0 seconds. We will leave these values as is for now, but we will need to consider accounting for them as we continue our analysis
+
+Before we begin our tasks, we should change the system-generated codes in the cancelled_by and driver_assigned columns to human-readable formats.
+
+```{r}
+orders <- orders %>% 
+  mutate(cancelled_by =
+           ifelse(cancelled_by == 4, "Client",
+           ifelse(cancelled_by == 9, "System",
+                  NA))) %>%
+  mutate(driver_assigned =
+           ifelse(driver_assigned == 1, "Yes",
+           ifelse(driver_assigned == 0, "No",
+                  NA)))
+```
+
+We can do a quick check to make sure that the cancelled_by column only had 4s and 9s and the driver_assigned columns only had 1s and 0s.
+
+```{r}
+sum(is.na(orders$cancelled_by)) 
+sum(is.na(orders$driver_assigned))
+```
+
+Looks like all the values were accurate. Now we can begin our tasks.
+
+### Task 1
+
+Plot the distribution of orders according to the reason for failure (e.g. cancellation before/after driver assignment and who cancelled the order). Analyze the resulting plot.
+
+```{r}
+reason_for_failures <- 
+  ggplot(orders, aes(x = driver_assigned, fill = cancelled_by)) +
+  geom_bar(position = "dodge") +
+  geom_text(stat = "count", aes(label = after_stat(count)), position = position_dodge(width = 0.9), vjust = -0.5) + # Add counts above columns
+  labs(
+    title = "Reason for Failed Orders",
+    subtitle = "By driver assignment and who the order was cancelled by",
+    x = "Driver Assigned",
+    y = "Number of Orders", 
+    fill = "Cancelled By"
+  )
+
+reason_for_failures
+```
+
+This plot suggests that the majority of orders were cancelled prior to a driver being assigned (which is a good thing, since a driver would rather not be assigned and then have their order cancelled). Also, almost all of the orders cancelled by the system are cancelled prior to a driver being assigned. This might suggest that whatever filters the system uses to screen rides is effective at screening the rides before assigning a driver (although the developers should investigate the reason why three orders were cancelled by the system after the driver was assigned to ensure this is not a bug).
+
+Though the majority of orders were cancelled prior to a driver being assigned, there was still a large number of clients cancelling their order after a driver was assigned. We can't identify the reason for this solely based on this plot, but one possible reason could be how long the order ETA was. Perhaps after a driver was assigned the client saw how long the ETA was and decided that they were better off cancelling the order and just hailing a cab on the street. Unfortunately, without knowing the average order ETA of successful rides, we lack a baseline to which we can compare the order ETA of the cancelled orders.
+
+### Task 2
+
+Plot the distribution of failed orders by hour. Is there a trend that certain hours have an abnormal number of failed orders? How can this be explained?
+
+```{r}
+# Extract the hour from each order and assign it to its own column
+orders <- orders %>%
+  mutate(order_hour = hour(order_time))
+
+# Calculate the average number of orders per hour
+avg_orders_per_hour <- orders %>%
+  group_by(order_hour) %>%
+  summarize(order_count = n()) %>%
+  summarize(avg_orders = mean(order_count))
+
+failures_by_hour <-
+  ggplot(orders, aes(x = order_hour)) +
+  geom_bar() +
+  geom_hline(
+    yintercept = avg_orders_per_hour$avg_orders,
+    color = "red") +
+    geom_label(
+      aes(0, avg_orders_per_hour$avg_orders, label = "Average", color = "red"), 
+      vjust = 1, 
+      show.legend = FALSE) +
+  labs(
+    title = "Distribution of Failed Orders by Hour",
+    x = "Order Hour",
+    y = "Number of Orders",
+    )
+
+failures_by_hour
+```
+
+The most obvious peak in the number of failed orders is from 8:00 AM to 9:00 AM, possibly due to an increase in orders submitted by clients traveling during rush hour. The number of failed orders from 9:00 PM to 1:00 AM is also much higher than the average. This could be due to an increase in orders submitted by clients in need of travel to and from nighttime establishments such as bars. The lowest number of failed orders is from 4:00 AM to 6:00 AM. This could be a result of the overall number of clients needing transportation being low during that time due to the fact that most people would be asleep. Unfortunately, as with the first task, this plot as a whole does not have much significance without knowing the distribution of total orders (both successful and failed) by the hour.
+
+### Task 3
+
+Plot the average time until cancellation before and after a driver has been assigned by the hour. If there are any outliers in the data, it would be better to remove them. Can we draw any conclusions from this plot?
+
+Recalling from our data summary that the cancellation_time column has a max value much higher than its mean and median, we can start by making a box plot to visually see any outliers.
+
+```{r, warning = FALSE}
+cancellation_time_box_plot <-
+  ggplot(orders, aes(driver_assigned, cancellation_time)) +
+  geom_boxplot() +
+  labs(
+    title = "Distribution of Cancellation Times",
+    y = "Cancellation Time (Seconds)",
+    x = "Driver Assigned"
+  )
+
+cancellation_time_box_plot
+```
+
+Note that when creating the box plot, ggplot() automatically ignores the 3,409 NAs in the cancellation_time column, which we determined earlier are actually orders cancelled by the system prior to a driver being assigned and could be considered to have a value of zero. The task is unclear on what exactly it is looking for, so we are going to assume it wants us to focus on orders cancelled by clients and not orders cancelled by the system.
+
+It is obvious that some of the values are much higher than the rest; however, I question whether that can just be considered part of the normal distribution. To explore this further, we can create a histogram to get a different view of the distribution.
+
+```{r, warning = FALSE}
+cancellation_time_histrogram <-
+  ggplot(orders, aes(x = cancellation_time)) +
+  geom_histogram(
+    binwidth = 50
+  ) +
+  labs(
+    title = "Histogram of Cancellation Times",
+    subtitle = "Binwidth = 50",
+    y = "Number of Orders",
+    x = "Cancellation Time"
+  )
+
+cancellation_time_histrogram
+```
+
+Whether there are outliers or whether those values are part of the normal distribution is still unclear. Since the question implies that it wants outliers removed, we will apply the 1.5\*IQR rule to determine exactly which values to remove (we will only remove outliers above the IQR here and not the ones below it (i.e., values closer to zero). We can run those two plots again to see the difference.
+
+```{r}
+#Filter outliers
+orders_no_cancellation_time_outliers <- orders %>%
+  select(driver_assigned, order_hour, cancellation_time) %>%
+  filter(cancellation_time < 1.5 * quantile(cancellation_time, probs = 0.75, na.rm = TRUE))
+
+cancellation_time_box_plot_no_outliers <-
+  ggplot(orders_no_cancellation_time_outliers, aes(driver_assigned, cancellation_time)) +
+  geom_boxplot() +
+  labs(
+    title = "Distribution of Cancellation Times",
+    subtitle = "With outliers removed",
+    y = "Cancellation Time (Seconds)",
+    x = "Driver Assigned"
+  )
+cancellation_time_box_plot_no_outliers
+
+cancellation_time_histrogram_no_outliers <-
+  ggplot(orders_no_cancellation_time_outliers, aes(x = cancellation_time)) +
+  geom_histogram(
+    binwidth = 10
+  ) +
+  labs(
+    title = "Histogram of Cancellation Times",
+    subtitle = "With outliers removed, binwidth = 10",
+    y = "Number of Orders",
+    x = "Cancellation Time (Seconds)"
+  )
+
+cancellation_time_histrogram_no_outliers
+
+```
+
+These plots definitely have a closer grouping of values. We can now proceed with the task of plotting the average time until cancellation by the hour and by whether or not a driver was assigned.
+
+```{r, message = FALSE}
+# Calculate the average number of cancelled orders per hour, grouped by hour and by whether or not a driver has been assigned
+avg_cancellation_no_outliers <- orders_no_cancellation_time_outliers %>%
+  group_by(order_hour, driver_assigned) %>%
+  summarize(avg_cancellation_time = mean(cancellation_time)) %>%
+  select(order_hour, driver_assigned, avg_cancellation_time)
+
+# Calculate the overall average number of cancelled orders per hour, grouped by whether or not a driver has been assigned
+avg_cancellation_time <- avg_cancellation_no_outliers %>%
+  group_by(driver_assigned) %>%
+  summarize(avg_cancellation_time = mean(avg_cancellation_time))
+
+avg_cancellation_time_by_hour_no_outliers <-
+  ggplot(avg_cancellation_no_outliers, aes(order_hour, avg_cancellation_time)) +
+  geom_col() +
+  geom_hline(
+    data = avg_cancellation_time,
+    aes(yintercept = avg_cancellation_time),
+    color = "red"
+  ) +
+  facet_wrap(
+    ~driver_assigned, 
+    ncol = 1,
+    labeller = labeller(driver_assigned = c("No" = "No Driver Assigned", "Yes" = "Driver Assigned"))) +
+  labs(
+    title = "Average Cancellation Time by Hour",
+    subtitle = "With outliers removed, average line shown in red",
+    y = "Cancellation Time (Seconds)",
+    x = "Order Hour"
+  )
+
+avg_cancellation_time_by_hour_no_outliers
+```
+
+Looking at these plots, it appears that the average cancellation time for most failed orders was relatively stable throughout the day. For orders without drivers assigned, there is a spike in cancellation time from 5:00 AM to 6:00 AM and a noticeable dip from 10:00 AM to noon. For orders with drivers assigned, the period from 3:00 AM to 7:00 AM has a noticeably lower cancellation time, whereas the period from 11:00 PM to 3:00 AM is much higher than average. Based on this plot alone, there is not enough evidence to draw a conclusion on why these periods stand out. It is outside the scope of this project, but one could investigate further by determining if these differences are actually statistically significant or not.
+
+### Task 4
+
+Plot the distribution of average ETA by hours. How can this plot be explained?
+
+```{r}
+# Calculate the average ETA, grouped by hour
+avg_eta_by_hour <- orders %>%
+  filter(!is.na(order_eta)) %>%
+  group_by(order_hour) %>%
+  summarize(avg_eta = mean(order_eta)) %>%
+  select(order_hour, avg_eta)
+
+# Calculate the overall average ETA
+avg_eta <- avg_eta_by_hour %>%
+  summarize(overall_avg_eta = mean(avg_eta))
+avg_eta <- as.data.frame(avg_eta)
+
+avg_eta_by_hour_plot <-
+  ggplot(avg_eta_by_hour, aes(order_hour, avg_eta)) +
+  geom_col() +
+  geom_hline(
+    yintercept = avg_eta$overall_avg_eta,
+    color = "red") +
+  geom_label(
+    aes(0, mean(avg_eta), label = "Average", color = "red"),
+    vjust = 1,
+    show.legend = FALSE) +
+  labs(
+    title = "Distribution of Average ETA by Hour",
+    x = "Order Hour",
+    y = "Average Order ETA (Seconds)",
+    )
+
+avg_eta_by_hour_plot
+```
+
+What this plot shows is that the average ETA peaks from 7:00 AM until 10:00 AM, around noon, and from 3:00 PM until 6:00 PM, possibly due to congestion during rush hour traffic. Average ETA is below average for the period from 7:00 PM until 5:00 AM, possibly due to the overall reduction in traffic during that time period.
+
+### Conclusion
+
+That wraps up this project. While visualizing this data provided some information, having a data set limited to just failed orders reduces the amount of insight we can gain. If we had data about the successful orders as well as the failed orders, we could plot a baseline and extract much more information from these plots. Without it, we don't know if spikes and drops are due to something related to the failed orders or just due to the increase/decrease in the volume of orders overall.
